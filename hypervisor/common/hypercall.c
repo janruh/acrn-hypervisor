@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <logmsg.h>
 #include <ioapic.h>
+#include <mmio_dev.h>
 
 #define DBG_LEVEL_HYCALL	6U
 
@@ -55,6 +56,7 @@ int32_t hcall_sos_offline_cpu(struct acrn_vm *vm, uint64_t lapicid)
 	uint16_t i;
 	int32_t ret = 0;
 
+	get_vm_lock(vm);
 	pr_info("sos offline cpu with lapicid %ld", lapicid);
 
 	foreach_vcpu(i, vm, vcpu) {
@@ -68,6 +70,7 @@ int32_t hcall_sos_offline_cpu(struct acrn_vm *vm, uint64_t lapicid)
 			offline_vcpu(vcpu);
 		}
 	}
+	put_vm_lock(vm);
 
 	return ret;
 }
@@ -159,45 +162,50 @@ int32_t hcall_create_vm(struct acrn_vm *vm, uint64_t param)
 
 	if (copy_from_gpa(vm, &cv, param, sizeof(cv)) == 0) {
 		vm_id = get_vmid_by_uuid(&cv.uuid[0]);
-		if ((vm_id > vm->vm_id) && (vm_id < CONFIG_MAX_VM_NUM)
-			&& (is_poweroff_vm(get_vm_from_vmid(vm_id)))) {
-			vm_config = get_vm_config(vm_id);
+		if ((vm_id > vm->vm_id) && (vm_id < CONFIG_MAX_VM_NUM)) {
+			get_vm_lock(get_vm_from_vmid(vm_id));
+			if (is_poweroff_vm(get_vm_from_vmid(vm_id))) {
 
-			/* Filter out the bits should not set by DM and then assign it to guest_flags */
-			vm_config->guest_flags |= (cv.vm_flag & DM_OWNED_GUEST_FLAG_MASK);
+				vm_config = get_vm_config(vm_id);
 
-			/* post-launched VM is allowed to choose pCPUs from vm_config->cpu_affinity only */
-			if ((cv.cpu_affinity & ~(vm_config->cpu_affinity)) == 0UL) {
-				/* By default launch VM with all the configured pCPUs */
-				uint64_t pcpu_bitmap = vm_config->cpu_affinity;
+				/* Filter out the bits should not set by DM and then assign it to guest_flags */
+				vm_config->guest_flags |= (cv.vm_flag & DM_OWNED_GUEST_FLAG_MASK);
 
-				if (cv.cpu_affinity != 0UL) {
-					/* overwrite the statically configured CPU affinity */
-					pcpu_bitmap = cv.cpu_affinity;
-				}
+				/* post-launched VM is allowed to choose pCPUs from vm_config->cpu_affinity only */
+				if ((cv.cpu_affinity & ~(vm_config->cpu_affinity)) == 0UL) {
+					/* By default launch VM with all the configured pCPUs */
+					uint64_t pcpu_bitmap = vm_config->cpu_affinity;
 
-				/*
-				 * GUEST_FLAG_RT must be set if we have GUEST_FLAG_LAPIC_PASSTHROUGH
-				 * set in guest_flags
-				 */
-				if (((vm_config->guest_flags & GUEST_FLAG_LAPIC_PASSTHROUGH) != 0UL)
-					&& ((vm_config->guest_flags & GUEST_FLAG_RT) == 0UL)) {
-					pr_err("Wrong guest flags 0x%lx\n", vm_config->guest_flags);
-				} else {
-					if (create_vm(vm_id, pcpu_bitmap, vm_config, &target_vm) == 0) {
-						/* return a relative vm_id from SOS view */
-						cv.vmid = vmid_2_rel_vmid(vm->vm_id, vm_id);
-						cv.vcpu_num = target_vm->hw.created_vcpus;
-					} else {
-						dev_dbg(DBG_LEVEL_HYCALL, "HCALL: Create VM failed");
-						cv.vmid = ACRN_INVALID_VMID;
+					if (cv.cpu_affinity != 0UL) {
+						/* overwrite the statically configured CPU affinity */
+						pcpu_bitmap = cv.cpu_affinity;
 					}
 
-					ret = copy_to_gpa(vm, &cv, param, sizeof(cv));
+					/*
+					 * GUEST_FLAG_RT must be set if we have GUEST_FLAG_LAPIC_PASSTHROUGH
+					 * set in guest_flags
+					 */
+					if (((vm_config->guest_flags & GUEST_FLAG_LAPIC_PASSTHROUGH) != 0UL)
+							&& ((vm_config->guest_flags & GUEST_FLAG_RT) == 0UL)) {
+						pr_err("Wrong guest flags 0x%lx\n", vm_config->guest_flags);
+					} else {
+						if (create_vm(vm_id, pcpu_bitmap, vm_config, &target_vm) == 0) {
+							/* return a relative vm_id from SOS view */
+							cv.vmid = vmid_2_rel_vmid(vm->vm_id, vm_id);
+							cv.vcpu_num = target_vm->hw.created_vcpus;
+						} else {
+							dev_dbg(DBG_LEVEL_HYCALL, "HCALL: Create VM failed");
+							cv.vmid = ACRN_INVALID_VMID;
+						}
+
+						ret = copy_to_gpa(vm, &cv, param, sizeof(cv));
+					}
+				} else {
+					pr_err("Post-launched VM%u chooses invalid pCPUs(0x%llx).",
+							vm_id, cv.cpu_affinity);
 				}
-			} else {
-				pr_err("Post-launched VM%u chooses invalid pCPUs(0x%llx).", vm_id, cv.cpu_affinity);
 			}
+			put_vm_lock(get_vm_from_vmid(vm_id));
 		}
 	}
 
@@ -219,11 +227,12 @@ int32_t hcall_destroy_vm(uint16_t vmid)
 	int32_t ret = -1;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if (is_paused_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	get_vm_lock(target_vm);
+	if (is_paused_vm(target_vm)) {
 		/* TODO: check target_vm guest_flags */
 		ret = shutdown_vm(target_vm);
 	}
-
+	put_vm_lock(target_vm);
 	return ret;
 }
 
@@ -243,11 +252,13 @@ int32_t hcall_start_vm(uint16_t vmid)
 	int32_t ret = -1;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if ((is_created_vm(target_vm)) && (is_postlaunched_vm(target_vm)) && (target_vm->sw.io_shared_page != NULL)) {
+	get_vm_lock(target_vm);
+	if ((is_created_vm(target_vm)) && (target_vm->sw.io_shared_page != NULL)) {
 		/* TODO: check target_vm guest_flags */
 		start_vm(target_vm);
 		ret = 0;
 	}
+	put_vm_lock(target_vm);
 
 	return ret;
 }
@@ -268,12 +279,13 @@ int32_t hcall_pause_vm(uint16_t vmid)
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 	int32_t ret = -1;
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	get_vm_lock(target_vm);
+	if (!is_poweroff_vm(target_vm)) {
 		/* TODO: check target_vm guest_flags */
 		pause_vm(target_vm);
 		ret = 0;
 	}
-
+	put_vm_lock(target_vm);
 	return ret;
 }
 
@@ -294,10 +306,12 @@ int32_t hcall_reset_vm(uint16_t vmid)
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 	int32_t ret = -1;
 
-	if (is_paused_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	get_vm_lock(target_vm);
+	if (is_paused_vm(target_vm)) {
 		/* TODO: check target_vm guest_flags */
 		ret = reset_vm(target_vm);
 	}
+	put_vm_lock(target_vm);
 	return ret;
 }
 
@@ -323,9 +337,9 @@ int32_t hcall_set_vcpu_regs(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	struct acrn_vcpu *vcpu;
 	int32_t ret = -1;
 
+	get_vm_lock(target_vm);
 	/* Only allow setup init ctx while target_vm is inactive */
-	if ((!is_poweroff_vm(target_vm)) && (param != 0U) && (is_postlaunched_vm(target_vm)) &&
-			(target_vm->state != VM_RUNNING)) {
+	if ((!is_poweroff_vm(target_vm)) && (param != 0U) && (target_vm->state != VM_RUNNING)) {
 		if (copy_from_gpa(vm, &vcpu_regs, param, sizeof(vcpu_regs)) != 0) {
 		} else if (vcpu_regs.vcpu_id >= MAX_VCPUS_PER_VM) {
 			pr_err("%s: invalid vcpu_id for set_vcpu_regs\n", __func__);
@@ -337,6 +351,7 @@ int32_t hcall_set_vcpu_regs(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 			}
 		}
 	}
+	put_vm_lock(target_vm);
 
 	return ret;
 }
@@ -362,7 +377,7 @@ int32_t hcall_set_irqline(const struct acrn_vm *vm, uint16_t vmid,
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 	int32_t ret = -1;
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		if (ops->gsi < get_vm_gsicount(vm)) {
 			if (ops->gsi < vpic_pincount()) {
 				/*
@@ -451,7 +466,7 @@ int32_t hcall_inject_msi(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	int32_t ret = -1;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		struct acrn_msi_entry msi;
 
 		if (copy_from_gpa(vm, &msi, param, sizeof(msi)) == 0) {
@@ -508,7 +523,8 @@ int32_t hcall_set_ioreq_buffer(struct acrn_vm *vm, uint16_t vmid, uint64_t param
 	uint16_t i;
 	int32_t ret = -1;
 
-	if (is_created_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	get_vm_lock(target_vm);
+	if (is_created_vm(target_vm)) {
 		struct acrn_set_ioreq_buffer iobuf;
 
 		if (copy_from_gpa(vm, &iobuf, param, sizeof(iobuf)) == 0) {
@@ -529,6 +545,7 @@ int32_t hcall_set_ioreq_buffer(struct acrn_vm *vm, uint16_t vmid, uint64_t param
 			}
 		}
 	}
+	put_vm_lock(target_vm);
 
 	return ret;
 }
@@ -551,7 +568,7 @@ int32_t hcall_notify_ioreq_finish(uint16_t vmid, uint16_t vcpu_id)
 	int32_t ret = -1;
 
 	/* make sure we have set req_buf */
-	if ((!is_poweroff_vm(target_vm)) && (is_postlaunched_vm(target_vm)) && (target_vm->sw.io_shared_page != NULL)) {
+	if ((!is_poweroff_vm(target_vm)) && (target_vm->sw.io_shared_page != NULL)) {
 		dev_dbg(DBG_LEVEL_HYCALL, "[%d] NOTIFY_FINISH for vcpu %d",
 			vmid, vcpu_id);
 
@@ -769,7 +786,7 @@ int32_t hcall_write_protect_page(struct acrn_vm *vm, uint16_t vmid, uint64_t wp_
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 	int32_t ret = -1;
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		struct wp_data wp;
 
 		if (copy_from_gpa(vm, &wp, wp_gpa, sizeof(wp)) == 0) {
@@ -802,8 +819,8 @@ int32_t hcall_gpa_to_hpa(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
 	(void)memset((void *)&v_gpa2hpa, 0U, sizeof(v_gpa2hpa));
-	if (!is_poweroff_vm(target_vm) && (!is_prelaunched_vm(target_vm))
-			&& (copy_from_gpa(vm, &v_gpa2hpa, param, sizeof(v_gpa2hpa)) == 0)) {
+	if (!is_poweroff_vm(target_vm) &&
+			(copy_from_gpa(vm, &v_gpa2hpa, param, sizeof(v_gpa2hpa)) == 0)) {
 		v_gpa2hpa.hpa = gpa2hpa(target_vm, v_gpa2hpa.gpa);
 		if (v_gpa2hpa.hpa == INVALID_HPA) {
 			pr_err("%s,vm[%hu] gpa 0x%lx,GPA is unmapping.",
@@ -836,7 +853,7 @@ int32_t hcall_assign_pcidev(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
 	/* We should only assign a device to a post-launched VM at creating time for safety, not runtime or other cases*/
-	if (is_created_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (is_created_vm(target_vm)) {
 		if (copy_from_gpa(vm, &pcidev, param, sizeof(pcidev)) == 0) {
 			ret = vpci_assign_pcidev(target_vm, &pcidev);
 		}
@@ -865,12 +882,76 @@ int32_t hcall_deassign_pcidev(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
 	/* We should only de-assign a device from a post-launched VM at creating/shutdown/reset time */
-	if ((is_paused_vm(target_vm) || is_created_vm(target_vm)) && is_postlaunched_vm(target_vm)) {
+	if ((is_paused_vm(target_vm) || is_created_vm(target_vm))) {
 		if (copy_from_gpa(vm, &pcidev, param, sizeof(pcidev)) == 0) {
 			ret = vpci_deassign_pcidev(target_vm, &pcidev);
 		}
 	} else {
 		pr_err("%s, vm[%d] is not a postlaunched VM, or not in PAUSED/CREATED status to be deassigned from a pcidev\n", __func__, vm->vm_id);
+	}
+
+	return ret;
+}
+
+/**
+ * @brief Assign one MMIO dev to a VM.
+ *
+ * @param vm Pointer to VM data structure
+ * @param vmid ID of the VM
+ * @param param guest physical address. This gpa points to data structure of
+ *              acrn_mmiodev including assign MMIO device info
+ *
+ * @pre Pointer vm shall point to SOS_VM
+ * @return 0 on success, non-zero on error.
+ */
+int32_t hcall_assign_mmiodev(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
+{
+	int32_t ret = -EINVAL;
+	struct acrn_mmiodev mmiodev;
+	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
+
+	/* We should only assign a device to a post-launched VM at creating time for safety, not runtime or other cases*/
+	if (is_created_vm(target_vm)) {
+		if (copy_from_gpa(vm, &mmiodev, param, sizeof(mmiodev)) == 0) {
+			ret = deassign_mmio_dev(vm, &mmiodev);
+			if (ret == 0) {
+				ret = assign_mmio_dev(target_vm, &mmiodev);
+			}
+		}
+	} else {
+		pr_err("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
+	}
+
+	return ret;
+}
+
+/**
+ * @brief Deassign one MMIO dev from a VM.
+ *
+ * @param vm Pointer to VM data structure
+ * @param vmid ID of the VM
+ * @param param guest physical address. This gpa points to data structure of
+ *              acrn_mmiodev including deassign MMIO device info
+ *
+ * @pre Pointer vm shall point to SOS_VM
+ * @return 0 on success, non-zero on error.
+ */
+int32_t hcall_deassign_mmiodev(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
+{
+	int32_t ret = -EINVAL;
+	struct acrn_mmiodev mmiodev;
+	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
+
+	/* We should only de-assign a device from a post-launched VM at creating/shutdown/reset time */
+	if ((is_paused_vm(target_vm) || is_created_vm(target_vm))) {
+		if (copy_from_gpa(vm, &mmiodev, param, sizeof(mmiodev)) == 0) {
+			ret = deassign_mmio_dev(target_vm, &mmiodev);
+			if (ret == 0) {
+				ret = assign_mmio_dev(vm, &mmiodev);
+			}
+		}
+	} else {
+		pr_err("vm[%d] %s failed!\n",target_vm->vm_id,  __func__);
 	}
 
 	return ret;
@@ -892,7 +973,7 @@ int32_t hcall_set_ptdev_intr_info(struct acrn_vm *vm, uint16_t vmid, uint64_t pa
 	int32_t ret = -1;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		struct hc_ptdev_irq irq;
 
 		if (copy_from_gpa(vm, &irq, param, sizeof(irq)) == 0) {
@@ -944,7 +1025,7 @@ hcall_reset_ptdev_intr_info(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	int32_t ret = -1;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		struct hc_ptdev_irq irq;
 
 		if (copy_from_gpa(vm, &irq, param, sizeof(irq)) == 0) {
@@ -1080,7 +1161,7 @@ int32_t hcall_vm_intr_monitor(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
 	uint64_t hpa;
 	struct acrn_vm *target_vm = get_vm_from_vmid(vmid);
 
-	if (!is_poweroff_vm(target_vm) && is_postlaunched_vm(target_vm)) {
+	if (!is_poweroff_vm(target_vm)) {
 		/* the param for this hypercall is page aligned */
 		hpa = gpa2hpa(vm, param);
 		if (hpa != INVALID_HPA) {
@@ -1126,14 +1207,11 @@ int32_t hcall_vm_intr_monitor(struct acrn_vm *vm, uint16_t vmid, uint64_t param)
  * @pre Pointer vm shall point to SOS_VM
  * @return 0 on success, non-zero on error.
  */
-int32_t hcall_set_callback_vector(const struct acrn_vm *vm, uint64_t param)
+int32_t hcall_set_callback_vector(__unused const struct acrn_vm *vm, uint64_t param)
 {
 	int32_t ret;
 
-	if (!is_sos_vm(vm)) {
-		pr_err("%s: Targeting to service vm", __func__);
-		ret = -EPERM;
-	} else if ((param > NR_MAX_VECTOR) || (param < VECTOR_DYNAMIC_START)) {
+	if ((param > NR_MAX_VECTOR) || (param < VECTOR_DYNAMIC_START)) {
 		pr_err("%s: Invalid passed vector\n", __func__);
 		ret = -EINVAL;
 	} else {

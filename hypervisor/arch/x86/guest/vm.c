@@ -32,6 +32,7 @@
 #include <pci_dev.h>
 #include <vacpi.h>
 #include <platform_caps.h>
+#include <mmio_dev.h>
 
 vm_sw_loader_t vm_sw_loader;
 
@@ -92,6 +93,10 @@ bool is_postlaunched_vm(const struct acrn_vm *vm)
 	return (get_vm_config(vm->vm_id)->load_order == POST_LAUNCHED_VM);
 }
 
+bool is_valid_postlaunched_vmid(uint16_t vm_id)
+{
+	return ((vm_id < CONFIG_MAX_VM_NUM) && is_postlaunched_vm(get_vm_from_vmid(vm_id)));
+}
 /**
  * @pre vm != NULL
  * @pre vm->vmid < CONFIG_MAX_VM_NUM
@@ -257,6 +262,10 @@ static void prepare_prelaunched_vm_memmap(struct acrn_vm *vm, const struct acrn_
 			remaining_hpa_size = vm_config->memory.size_hpa2;
 		}
 	}
+
+	for (i = 0U; i < MAX_MMIO_DEV_NUM; i++) {
+		(void)assign_mmio_dev(vm, &vm_config->mmiodevs[i]);
+	}
 }
 
 /**
@@ -328,6 +337,10 @@ static void prepare_sos_vm_memmap(struct acrn_vm *vm)
 		if (vm_config->load_order == PRE_LAUNCHED_VM) {
 			ept_del_mr(vm, pml4_page, vm_config->memory.start_hpa, vm_config->memory.size);
 		}
+
+		for (i = 0U; i < MAX_MMIO_DEV_NUM; i++) {
+			(void)deassign_mmio_dev(vm, &vm_config->mmiodevs[i]);
+		}
 	}
 
 	/* unmap AP trampoline code for security
@@ -394,7 +407,6 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 
 	/* Allocate memory for virtual machine */
 	vm = &vm_array[vm_id];
-	(void)memset((void *)vm, 0U, sizeof(struct acrn_vm));
 	vm->vm_id = vm_id;
 	vm->hw.created_vcpus = 0U;
 
@@ -437,13 +449,14 @@ int32_t create_vm(uint16_t vm_id, uint64_t pcpu_bitmap, struct acrn_vm_config *v
 
 	if (status == 0) {
 		prepare_epc_vm_memmap(vm);
-
 		spinlock_init(&vm->vlapic_mode_lock);
 		spinlock_init(&vm->ept_lock);
 		spinlock_init(&vm->emul_mmio_lock);
 
 		vm->arch_vm.vlapic_mode = VM_VLAPIC_XAPIC;
 		vm->intr_inject_delay_delta = 0UL;
+		vm->nr_emul_mmio_regions = 0U;
+		vm->vcpuid_entry_nr = 0U;
 
 		/* Set up IO bit-mask such that VM exit occurs on
 		 * selected IO ranges
@@ -597,6 +610,8 @@ int32_t shutdown_vm(struct acrn_vm *vm)
 	deinit_vuart(vm);
 
 	deinit_vpci(vm);
+
+	deinit_emul_io(vm);
 
 	/* Free EPT allocated resources assigned to VM */
 	destroy_ept(vm);
@@ -757,6 +772,7 @@ void prepare_vm(uint16_t vm_id, struct acrn_vm_config *vm_config)
 
 /**
  * @pre vm_config != NULL
+ * @Application constraint: The validity of vm_config->cpu_affinity should be guaranteed before run-time.
  */
 void launch_vms(uint16_t pcpu_id)
 {
@@ -766,11 +782,10 @@ void launch_vms(uint16_t pcpu_id)
 	for (vm_id = 0U; vm_id < CONFIG_MAX_VM_NUM; vm_id++) {
 		vm_config = get_vm_config(vm_id);
 		if ((vm_config->load_order == SOS_VM) || (vm_config->load_order == PRE_LAUNCHED_VM)) {
-			if (vm_config->load_order == SOS_VM) {
-				sos_vm_ptr = &vm_array[vm_id];
-			}
-
 			if (pcpu_id == get_configured_bsp_pcpu_id(vm_config)) {
+				if (vm_config->load_order == SOS_VM) {
+					sos_vm_ptr = &vm_array[vm_id];
+				}
 				prepare_vm(vm_id, vm_config);
 			}
 		}
@@ -890,4 +905,19 @@ void make_shutdown_vm_request(uint16_t pcpu_id)
 bool need_shutdown_vm(uint16_t pcpu_id)
 {
 	return bitmap_test_and_clear_lock(NEED_SHUTDOWN_VM, &per_cpu(pcpu_flag, pcpu_id));
+}
+
+/*
+ * @pre vm != NULL
+ */
+void get_vm_lock(struct acrn_vm *vm)
+{
+	spinlock_obtain(&vm->vm_state_lock);
+}
+/*
+ * @pre vm != NULL
+ */
+void put_vm_lock(struct acrn_vm *vm)
+{
+	spinlock_release(&vm->vm_state_lock);
 }

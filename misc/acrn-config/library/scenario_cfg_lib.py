@@ -46,6 +46,7 @@ UUID_DB = {
         '38158821-5208-4005-b72a-8a609e4190d0', 'a6750180-f87a-48d2-91d9-4e7f62b6519e', 'd1816e4a-a9bb-4cb4-a066-3f1a8a5ce73f'],
     'POST_RT_VM':['495ae2e5-2603-4d64-af76-d4bc5a8ec0e5'],
     'KATA_VM':['a7ada506-1ab0-4b6b-a0da-e513ca9b8c2f'],
+    'PRE_RT_VM':['b2a92bec-ca6b-11ea-b106-3716a8ba0bb9'],
 }
 
 VM_DB = {
@@ -55,6 +56,7 @@ VM_DB = {
     'POST_STD_VM':{'load_type':'POST_LAUNCHED_VM', 'severity':'SEVERITY_STANDARD_VM', 'uuid':UUID_DB['POST_STD_VM']},
     'POST_RT_VM':{'load_type':'POST_LAUNCHED_VM', 'severity':'SEVERITY_RTVM', 'uuid':UUID_DB['POST_RT_VM']},
     'KATA_VM':{'load_type':'POST_LAUNCHED_VM', 'severity':'SEVERITY_STANDARD_VM', 'uuid':UUID_DB['KATA_VM']},
+    'PRE_RT_VM':{'load_type':'PRE_LAUNCHED_VM', 'severity':'SEVERITY_RTVM', 'uuid':UUID_DB['PRE_RT_VM']},
 }
 LOAD_VM_TYPE = list(VM_DB.keys())
 
@@ -179,9 +181,10 @@ def load_vm_check(load_vms, item):
         ERR_LIST[key] = "POST Standard vm number should not be greater than {}".format(len(UUID_DB["POST_STD_VM"]))
         return
 
-    if len(pre_vm_ids) > len(UUID_DB["PRE_STD_VM"]):
+    max_pre_launch_vms = len(UUID_DB["PRE_STD_VM"]) + len(UUID_DB["SAFETY_VM"]) + len(UUID_DB["PRE_RT_VM"])
+    if len(pre_vm_ids) > max_pre_launch_vms:
         key = "vm:id={},{}".format(pre_vm_ids[0], item)
-        ERR_LIST[key] = "PRE Standard vm number should not be greater than {}".format(len(UUID_DB["PRE_STD_VM"]))
+        ERR_LIST[key] = "PRE Launched VM number should not be greater than {}".format(max_pre_launch_vms)
         return
 
     if post_vm_ids and sos_vm_ids:
@@ -237,6 +240,7 @@ def vm_cpu_affinity_check(config_file, id_cpus_per_vm_dic, item):
             else:
                 use_cpus.append(cpu)
 
+    sos_vm_cpus = []
     pre_launch_cpus = []
     post_launch_cpus = []
     for vm_i, vm_type in common.VM_TYPES.items():
@@ -248,6 +252,9 @@ def vm_cpu_affinity_check(config_file, id_cpus_per_vm_dic, item):
         elif VM_DB[vm_type]['load_type'] == "POST_LAUNCHED_VM":
             cpus = [x for x in id_cpus_per_vm_dic[vm_i] if not None]
             post_launch_cpus.extend(cpus)
+        elif VM_DB[vm_type]['load_type'] == "SOS_VM":
+            cpus = [x for x in id_cpus_per_vm_dic[vm_i] if not None]
+            sos_vm_cpus.extend(cpus)
 
         # duplicate cpus assign the same VM check
         cpus_vm_i = id_cpus_per_vm_dic[vm_i]
@@ -258,6 +265,10 @@ def vm_cpu_affinity_check(config_file, id_cpus_per_vm_dic, item):
                 return err_dic
 
     if pre_launch_cpus:
+        if "SOS_VM" in common.VM_TYPES and not sos_vm_cpus:
+            key = "SOS VM cpu_affinity"
+            err_dic[key] = "Should assign CPU id for SOS VM"
+
         for pcpu in pre_launch_cpus:
             if pre_launch_cpus.count(pcpu) >= 2:
                 key = "Pre launched VM cpu_affinity"
@@ -381,7 +392,7 @@ def os_kern_args_check(id_kern_args_dic, prime_item, item):
             ERR_LIST[key] = "VM os config kernel service os should be SOS_VM_BOOTARGS"
 
 
-def os_kern_load_addr_check(id_kern_load_addr_dic, prime_item, item):
+def os_kern_load_addr_check(kern_type, id_kern_load_addr_dic, prime_item, item):
     """
     Check os kernel load address
     :param prime_item: the prime item in xml file
@@ -390,6 +401,8 @@ def os_kern_load_addr_check(id_kern_load_addr_dic, prime_item, item):
     """
 
     for id_key, kern_load_addr in id_kern_load_addr_dic.items():
+        if kern_type[id_key] != 'KERNEL_ZEPHYR':
+            continue
 
         if not kern_load_addr:
             key = "vm:id={},{},{}".format(id_key, prime_item, item)
@@ -401,7 +414,7 @@ def os_kern_load_addr_check(id_kern_load_addr_dic, prime_item, item):
             ERR_LIST[key] = "VM os config kernel load address should Hex format"
 
 
-def os_kern_entry_addr_check(id_kern_entry_addr_dic, prime_item, item):
+def os_kern_entry_addr_check(kern_type, id_kern_entry_addr_dic, prime_item, item):
     """
     Check os kernel entry address
     :param prime_item: the prime item in xml file
@@ -410,6 +423,8 @@ def os_kern_entry_addr_check(id_kern_entry_addr_dic, prime_item, item):
     """
 
     for id_key, kern_entry_addr in id_kern_entry_addr_dic.items():
+        if kern_type[id_key] != 'KERNEL_ZEPHYR':
+            continue
 
         if not kern_entry_addr:
             key = "vm:id={},{},{}".format(id_key, prime_item, item)
@@ -468,6 +483,10 @@ def cpus_assignment(cpus_per_vm, index):
     :return: cpu assignment string
     """
     vm_cpu_bmp = {}
+    if "SOS_VM" == common.VM_TYPES[index]:
+        if index not in cpus_per_vm:
+            sos_extend_all_cpus = board_cfg_lib.get_processor_info()
+            cpus_per_vm[index] = sos_extend_all_cpus
 
     for i in range(len(cpus_per_vm[index])):
         if i == 0:

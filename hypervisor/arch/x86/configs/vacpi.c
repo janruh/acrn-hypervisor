@@ -10,6 +10,19 @@
 #include <pgtable.h>
 #include <platform_acpi_info.h>
 
+#define ACPI_TABLE_HEADER(SIGNATURE, LENGTH, REVISION, OEM_ID,			\
+	OEM_TABLE_ID, OEM_REVISION, ASL_COMPILER_ID, ASL_COMPILER_REVISION) 	\
+	{									\
+		.signature = (SIGNATURE),					\
+		.length = (LENGTH),						\
+		.revision = (REVISION),						\
+		.oem_id = (OEM_ID),						\
+		.oem_table_id = (OEM_TABLE_ID),					\
+		.oem_revision = (OEM_REVISION),					\
+		.asl_compiler_id = (ASL_COMPILER_ID),				\
+		.asl_compiler_revision = (ASL_COMPILER_REVISION),		\
+	}
+
 /* ACPI tables for pre-launched VM and SOS */
 static struct acpi_table_info acpi_table_template[CONFIG_MAX_VM_NUM] = {
 	[0U ... (CONFIG_MAX_VM_NUM - 1U)] = {
@@ -21,25 +34,14 @@ static struct acpi_table_info acpi_table_template[CONFIG_MAX_VM_NUM] = {
 			.xsdt_physical_address = ACPI_XSDT_ADDR,
 		},
 		.xsdt = {
-			.header.revision = 0x1U,
-			.header.oem_revision = 0x1U,
-			.header.asl_compiler_revision = ACPI_ASL_COMPILER_VERSION,
-			.header.signature = ACPI_SIG_XSDT,
-			.header.oem_id = ACPI_OEM_ID,
-			.header.oem_table_id = "ACRNXSDT",
-			.header.asl_compiler_id = ACPI_ASL_COMPILER_ID,
+			.header = ACPI_TABLE_HEADER(ACPI_SIG_XSDT, 0U, 0x1U, ACPI_OEM_ID,
+					"ACRNXSDT", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
 
 			.table_offset_entry[0] = ACPI_MADT_ADDR,
 		},
 		.fadt = {
-			.header.revision = 0x3U,
-			.header.length = 0xF4U,
-			.header.oem_revision = 0x1U,
-			.header.asl_compiler_revision = ACPI_ASL_COMPILER_VERSION,
-			.header.signature = ACPI_SIG_FADT,
-			.header.oem_id = ACPI_OEM_ID,
-			.header.oem_table_id = "ACRNMADT",
-			.header.asl_compiler_id = ACPI_ASL_COMPILER_ID,
+			.header = ACPI_TABLE_HEADER(ACPI_SIG_FADT, 0xF4U, 0x3U, ACPI_OEM_ID,
+					"ACRNFADT", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
 
 			.dsdt = ACPI_DSDT_ADDR,
 
@@ -50,24 +52,11 @@ static struct acpi_table_info acpi_table_template[CONFIG_MAX_VM_NUM] = {
 
 			.flags = 0x00001125U,	/* HEADLESS | TMR_VAL_EXT | SLP_BUTTON | PROC_C1 | WBINVD */
 		},
-		.dsdt = {
-			.revision = 0x3U,
-			.length = sizeof(struct acpi_table_header),
-			.oem_revision = 0x1U,
-			.asl_compiler_revision = ACPI_ASL_COMPILER_VERSION,
-			.signature = ACPI_SIG_DSDT,
-			.oem_id = ACPI_OEM_ID,
-			.oem_table_id = "ACRNMADT",
-			.asl_compiler_id = ACPI_ASL_COMPILER_ID,
-		},
+		.dsdt = ACPI_TABLE_HEADER(ACPI_SIG_DSDT, sizeof(struct acpi_table_header), 0x3U, ACPI_OEM_ID,
+					"ACRNDSDT", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
 		.mcfg = {
-			.header.revision = 0x3U,
-			.header.oem_revision = 0x1U,
-			.header.asl_compiler_revision = ACPI_ASL_COMPILER_VERSION,
-			.header.signature = ACPI_SIG_MCFG,
-			.header.oem_id = ACPI_OEM_ID,
-			.header.oem_table_id = "ACRNMADT",
-			.header.asl_compiler_id = ACPI_ASL_COMPILER_ID,
+			.header = ACPI_TABLE_HEADER(ACPI_SIG_MCFG, 0U, 0x3U, ACPI_OEM_ID,
+					"ACRNMCFG", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
 		},
 		.mcfg_entry = {
 			.address = VIRT_PCI_MMCFG_BASE,
@@ -76,13 +65,8 @@ static struct acpi_table_info acpi_table_template[CONFIG_MAX_VM_NUM] = {
 			.end_bus_number = 0xFFU,
 		},
 		.madt = {
-			.header.revision = 0x3U,
-			.header.oem_revision = 0x1U,
-			.header.asl_compiler_revision = ACPI_ASL_COMPILER_VERSION,
-			.header.signature = ACPI_SIG_MADT,
-			.header.oem_id = ACPI_OEM_ID,
-			.header.oem_table_id = "ACRNMADT",
-			.header.asl_compiler_id = ACPI_ASL_COMPILER_ID,
+			.header = ACPI_TABLE_HEADER(ACPI_SIG_MADT, 0U, 0x3U, ACPI_OEM_ID,
+					"ACRNMADT", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
 
 			.address = 0xFEE00000U, /* Local APIC Address */
 			.flags = 0x1U, /* PC-AT Compatibility=1 */
@@ -110,6 +94,28 @@ static struct acpi_table_info acpi_table_template[CONFIG_MAX_VM_NUM] = {
 	}
 };
 
+#ifdef VM0_PASSTHROUGH_TPM
+static struct acpi_table_tpm2 tpm2 = {
+	.header = ACPI_TABLE_HEADER(ACPI_SIG_TPM2, sizeof(struct acpi_table_tpm2), 0x3U, ACPI_OEM_ID,
+			"ACRNTPM2", 0x1U, ACPI_ASL_COMPILER_ID, ACPI_ASL_COMPILER_VERSION),
+	.control_address = 0xFED40040UL,
+	.start_method = 0x7U,	/* Uses the Command Response Buffer Interface */
+};
+
+static uint8_t dsdt_data[45U] = {
+		// [.5TPM_
+		0x5B, 0x82, 0x35, 0x54, 0x50, 0x4D, 0x5F,
+		// ._HID.MSFT0101.
+		0x08, 0x5F, 0x48, 0x49, 0x44, 0x0D, 0x4D, 0x53, 0x46, 0x54, 0x30, 0x31, 0x30, 0x31, 0x00,
+		// ._CRS
+		0x08, 0x5F, 0x43, 0x52, 0x53,
+		0x11, 0x11, 0x0A, 0x0E, 0x86, 0x09, 0x00, 0x01, 0x00, 0x00, 0xD4, 0xFE, 0x00, 0x50, 0x00, 0x00,
+		0x79, 0x00 };
+#else
+static struct acpi_table_tpm2 tpm2;
+static uint8_t dsdt_data[0U];
+#endif
+
 /**
  * @pre vm != NULL
  * @pre vm->vm_id < CONFIG_MAX_VM_NUM
@@ -124,7 +130,8 @@ void build_vacpi(struct acrn_vm *vm)
 	struct acpi_table_mcfg *mcfg;
 	struct acpi_table_madt *madt;
 	struct acpi_madt_local_apic *lapic;
-	uint16_t i;
+	uint16_t i, table_entry = 3U;
+	bool pt_tpm2_acpitable = get_vm_config(vm->vm_id)->pt_tpm2;
 
 	rsdp = &acpi_table_template[vm->vm_id].rsdp;
 	rsdp->checksum = calculate_checksum8(rsdp, ACPI_RSDP_CHECKSUM_LENGTH);
@@ -140,8 +147,11 @@ void build_vacpi(struct acrn_vm *vm)
 	xsdt->table_offset_entry[0] = ACPI_FADT_ADDR;
 	xsdt->table_offset_entry[1] = ACPI_MCFG_ADDR;
 	xsdt->table_offset_entry[2] = ACPI_MADT_ADDR;
+	if (pt_tpm2_acpitable) {
+		xsdt->table_offset_entry[table_entry++] = ACPI_TPM2_ADDR;
+	}
 	/* Currently XSDT table only pointers to 3 ACPI table entry (FADT/MCFG/MADT) */
-	xsdt->header.length = sizeof(struct acpi_table_header) + (3U * sizeof(uint64_t));
+	xsdt->header.length = sizeof(struct acpi_table_header) + (table_entry * sizeof(uint64_t));
 	xsdt->header.checksum = calculate_checksum8(xsdt, xsdt->header.length);
 	clac();
 
@@ -152,10 +162,19 @@ void build_vacpi(struct acrn_vm *vm)
 	(void)copy_to_gpa(vm, fadp, ACPI_FADT_ADDR, fadp->header.length);
 
 	dsdt = &acpi_table_template[vm->vm_id].dsdt;
-	dsdt->checksum = calculate_checksum8(dsdt, dsdt->length);
 
 	/* Copy DSDT table and its subtables to guest physical memory */
 	(void)copy_to_gpa(vm, dsdt, ACPI_DSDT_ADDR, dsdt->length);
+	if (pt_tpm2_acpitable) {
+		(void)copy_to_gpa(vm, dsdt_data, ACPI_DSDT_ADDR + dsdt->length, sizeof(dsdt_data));
+	}
+	dsdt = (struct acpi_table_header *)gpa2hva(vm, ACPI_DSDT_ADDR);
+	stac();
+	if (pt_tpm2_acpitable) {
+		dsdt->length += sizeof(dsdt_data);
+	}
+	dsdt->checksum = calculate_checksum8(dsdt, dsdt->length);
+	clac();
 
        mcfg = &acpi_table_template[vm->vm_id].mcfg;
        mcfg->header.length = sizeof(struct acpi_table_mcfg)
@@ -180,4 +199,9 @@ void build_vacpi(struct acrn_vm *vm)
 
 	/* Copy MADT table and its subtables to guest physical memory */
 	(void)copy_to_gpa(vm, madt, ACPI_MADT_ADDR, madt->header.length);
+
+	if (pt_tpm2_acpitable) {
+		tpm2.header.checksum = calculate_checksum8(&tpm2, tpm2.header.length);
+		(void)copy_to_gpa(vm, &tpm2, ACPI_TPM2_ADDR, tpm2.header.length);
+	}
 }

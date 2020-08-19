@@ -19,6 +19,9 @@ def get_pre_vm_type(vm_type, vm_i):
     if vm_type == "SAFETY_VM":
         return "CONFIG_SAFETY_VM(1)"
 
+    if vm_type == "PRE_RT_VM":
+        return "CONFIG_PRE_RT_VM(1)"
+
     i_cnt = 0
     for i,v_type in common.VM_TYPES.items():
         if v_type == "PRE_STD_VM" and i <= vm_i:
@@ -190,11 +193,11 @@ def cpu_affinity_output(vm_info, i, config):
     :param i: the index of vm id
     :param config: file pointor to store the information
     """
-    if "SOS_VM" == scenario_cfg_lib.VM_DB[vm_info.load_vm[i]]['load_type']:
-        return
 
-    cpu_bits = vm_info.get_cpu_bitmap(i)
-    print("\t\t.cpu_affinity = VM{}_CONFIG_CPU_AFFINITY,".format(i), file=config)
+    if "SOS_VM" == common.VM_TYPES[i]:
+        print("\t\t.cpu_affinity = SOS_VM_CONFIG_CPU_AFFINITY,", file=config)
+    else:
+        print("\t\t.cpu_affinity = VM{}_CONFIG_CPU_AFFINITY,".format(i), file=config)
 
 
 def clos_output(scenario_items, i, config):
@@ -338,9 +341,18 @@ def gen_pre_launch_vm(vm_type, vm_i, scenario_items, config):
         return err_dic
 
     if vm_info.cfg_pci.pci_devs[vm_i] and vm_info.cfg_pci.pci_devs[vm_i] != None:
-        print("\t\t.pci_dev_num = {}U,".format(vm_info.cfg_pci.pci_dev_num[vm_i]), file=config)
+        print("\t\t.pci_dev_num = VM{}_CONFIG_PCI_DEV_NUM,".format(vm_i), file=config)
         print("\t\t.pci_devs = vm{}_pci_devs,".format(vm_i), file=config)
 
+    if vm_i == 0 and board_cfg_lib.is_tpm_passthru():
+        print("#ifdef VM0_PASSTHROUGH_TPM", file=config)
+        print("\t\t.pt_tpm2 = true,", file=config)
+        print("\t\t.mmiodevs[0] = {", file=config)
+        print("\t\t\t.base_gpa = 0xFED40000UL,", file=config)
+        print("\t\t\t.base_hpa = VM0_TPM_BUFFER_BASE_ADDR,", file=config)
+        print("\t\t\t.size = VM0_TPM_BUFFER_SIZE,", file=config)
+        print("\t\t},", file=config)
+        print("#endif", file=config)
     print("\t},", file=config)
 
 
@@ -367,7 +379,7 @@ def pre_launch_definiation(vm_info, config):
         if "PRE_LAUNCHED_VM" != scenario_cfg_lib.VM_DB[vm_type]['load_type']:
             continue
         print("extern struct acrn_vm_pci_dev_config " +
-              "vm{}_pci_devs[{}];".format(vm_i, vm_info.cfg_pci.pci_dev_num[vm_i]), file=config)
+              "vm{}_pci_devs[VM{}_CONFIG_PCI_DEV_NUM];".format(vm_i, vm_i), file=config)
     print("", file=config)
 
 def generate_file(scenario_items, config):

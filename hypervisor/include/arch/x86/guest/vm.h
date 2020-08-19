@@ -81,7 +81,7 @@ struct vm_pm_info {
 
 /* Enumerated type for VM states */
 enum vm_state {
-	VM_POWERED_OFF = 0,
+	VM_POWERED_OFF = 0,   /* MUST set 0 because vm_state's initialization depends on clear BSS section */
 	VM_CREATED,	/* VM created / awaiting start (boot) */
 	VM_RUNNING,	/* VM running */
 	VM_READY_TO_POWEROFF,     /* RTVM only, it is trying to poweroff by itself */
@@ -130,11 +130,14 @@ struct acrn_vm {
 	struct acrn_vuart vuart[MAX_VUART_NUM_PER_VM];		/* Virtual UART */
 	enum vpic_wire_mode wire_mode;
 	struct iommu_domain *iommu;	/* iommu domain of this VM */
+	/* vm_state_lock used to protect vm/vcpu state transition,
+	 * the initialization depends on the clear BSS section
+	 */
+	spinlock_t vm_state_lock;
 	spinlock_t vlapic_mode_lock;	/* Spin-lock used to protect vlapic_mode modifications for a VM */
 	spinlock_t ept_lock;	/* Spin-lock used to protect ept add/modify/remove for a VM */
-
 	spinlock_t emul_mmio_lock;	/* Used to protect emulation mmio_node concurrent access for a VM */
-	uint16_t max_emul_mmio_regions;	/* max index of the emulated mmio_region */
+	uint16_t nr_emul_mmio_regions;	/* the emulated mmio_region number */
 	struct mem_io_node emul_mmio[CONFIG_MAX_EMULATED_MMIO_REGIONS];
 
 	struct vm_io_handler_desc emul_pio[EMUL_PIO_IDX_MAX];
@@ -152,7 +155,6 @@ struct acrn_vm {
 	uint32_t vcpuid_entry_nr, vcpuid_level, vcpuid_xlevel;
 	struct vcpuid_entry vcpuid_entries[MAX_VM_VCPUID_ENTRIES];
 	struct acrn_vpci vpci;
-
 	uint8_t vrtc_offset;
 
 	uint64_t intr_inject_delay_delta; /* delay of intr injection */
@@ -223,6 +225,7 @@ bool is_created_vm(const struct acrn_vm *vm);
 bool is_paused_vm(const struct acrn_vm *vm);
 bool is_sos_vm(const struct acrn_vm *vm);
 bool is_postlaunched_vm(const struct acrn_vm *vm);
+bool is_valid_postlaunched_vmid(uint16_t vm_id);
 bool is_prelaunched_vm(const struct acrn_vm *vm);
 uint16_t get_vmid_by_uuid(const uint8_t *uuid);
 struct acrn_vm *get_vm_from_vmid(uint16_t vm_id);
@@ -246,6 +249,15 @@ struct acrn_vm *get_highest_severity_vm(bool runtime);
 bool vm_hide_mtrr(const struct acrn_vm *vm);
 void update_vm_vlapic_state(struct acrn_vm *vm);
 enum vm_vlapic_mode check_vm_vlapic_mode(const struct acrn_vm *vm);
+/*
+ * @pre vm != NULL
+ */
+void get_vm_lock(struct acrn_vm *vm);
+
+/*
+ * @pre vm != NULL
+ */
+void put_vm_lock(struct acrn_vm *vm);
 #endif /* !ASSEMBLER */
 
 #endif /* VM_H_ */
