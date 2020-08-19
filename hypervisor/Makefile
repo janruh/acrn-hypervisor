@@ -19,6 +19,10 @@ HV_OBJDIR ?= $(CURDIR)/build
 HV_MODDIR ?= $(HV_OBJDIR)/modules
 HV_FILE := acrn
 
+ifeq ($(TARGET_DIR),)
+  override TARGET_DIR := $(realpath ../misc/vm_configs)
+endif
+
 LIB_MOD = $(HV_MODDIR)/lib_mod.a
 BOOT_MOD = $(HV_MODDIR)/boot_mod.a
 HW_MOD = $(HV_MODDIR)/hw_mod.a
@@ -55,13 +59,9 @@ override BOARD := $(shell echo $(CONFIG_BOARD) |sed 's/"//g')
 #override SCENARIO from CONFIG_SCENARIO, which is specified in kconfig.mk
 override SCENARIO := $(shell echo $(CONFIG_SCENARIO) |sed 's/"//g')
 
-ifeq ($(TARGET_DIR),)
-  BOARD_CFG_DIR := arch/x86/configs/$(BOARD)
-  SCENARIO_CFG_DIR := scenarios/$(SCENARIO)
-else
-  BOARD_CFG_DIR := $(TARGET_DIR)/$(BOARD)
-  SCENARIO_CFG_DIR := $(TARGET_DIR)/$(SCENARIO)
-endif
+BOARD_INFO_DIR := $(TARGET_DIR)/boards/$(BOARD)
+SCENARIO_CFG_DIR := $(TARGET_DIR)/scenarios/$(SCENARIO)
+BOARD_CFG_DIR := $(SCENARIO_CFG_DIR)/$(BOARD)
 
 include ../paths.make
 
@@ -162,8 +162,11 @@ INCLUDE_PATH += include/hw
 INCLUDE_PATH += boot/include
 INCLUDE_PATH += boot/include/guest
 INCLUDE_PATH += $(HV_OBJDIR)/include
+INCLUDE_PATH += $(BOARD_INFO_DIR)
 INCLUDE_PATH += $(BOARD_CFG_DIR)
 INCLUDE_PATH += $(SCENARIO_CFG_DIR)
+
+override INCLUDE_PATH := $(realpath $(INCLUDE_PATH))
 
 CC ?= gcc
 AS ?= as
@@ -250,11 +253,6 @@ HW_C_SRCS += common/sched_bvt.c
 endif
 HW_C_SRCS += hw/pci.c
 HW_C_SRCS += arch/x86/configs/vm_config.c
-HW_C_SRCS += $(BOARD_CFG_DIR)/board.c
-HW_C_SRCS += $(SCENARIO_CFG_DIR)/vm_configurations.c
-ifneq (,$(wildcard $(SCENARIO_CFG_DIR)/pci_dev.c))
-HW_C_SRCS += $(SCENARIO_CFG_DIR)/pci_dev.c
-endif
 HW_C_SRCS += boot/acpi_base.c
 HW_C_SRCS += boot/cmdline.c
 # ACPI parsing component
@@ -266,6 +264,13 @@ endif
 HW_C_SRCS += boot/guest/vboot_wrapper.c
 HW_C_SRCS += boot/guest/deprivilege_boot.c
 HW_C_SRCS += boot/guest/direct_boot.c
+
+# VM Configuration
+VM_CFG_C_SRCS += $(BOARD_INFO_DIR)/board.c
+VM_CFG_C_SRCS += $(SCENARIO_CFG_DIR)/vm_configurations.c
+ifneq (,$(wildcard $(BOARD_CFG_DIR)/pci_dev.c))
+VM_CFG_C_SRCS += $(BOARD_CFG_DIR)/pci_dev.c
+endif
 
 # virtual platform base component
 VP_BASE_C_SRCS += arch/x86/guest/vcpuid.c
@@ -301,11 +306,13 @@ VP_DM_C_SRCS += dm/vpci/vdev.c
 VP_DM_C_SRCS += dm/vpci/vpci.c
 VP_DM_C_SRCS += dm/vpci/vhostbridge.c
 VP_DM_C_SRCS += dm/vpci/vpci_bridge.c
+VP_DM_C_SRCS += dm/vpci/ivshmem.c
 VP_DM_C_SRCS += dm/vpci/pci_pt.c
 VP_DM_C_SRCS += dm/vpci/vmsi.c
 VP_DM_C_SRCS += dm/vpci/vmsix.c
 VP_DM_C_SRCS += dm/vpci/vmsix_on_msi.c
 VP_DM_C_SRCS += dm/vpci/vsriov.c
+VP_DM_C_SRCS += dm/mmio_dev.c
 VP_DM_C_SRCS += arch/x86/guest/vlapic.c
 VP_DM_C_SRCS += arch/x86/guest/pm.c
 VP_DM_C_SRCS += arch/x86/guest/assign.c
@@ -334,6 +341,7 @@ BOOT_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(BOOT_C_SRCS))
 BOOT_S_OBJS := $(patsubst %.S,$(HV_OBJDIR)/%.o,$(BOOT_S_SRCS))
 HW_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(HW_C_SRCS))
 HW_S_OBJS := $(patsubst %.S,$(HV_OBJDIR)/%.o,$(HW_S_SRCS))
+VM_CFG_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(realpath $(VM_CFG_C_SRCS)))
 VP_BASE_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(VP_BASE_C_SRCS))
 VP_BASE_S_OBJS := $(patsubst %.S,$(HV_OBJDIR)/%.o,$(VP_BASE_S_SRCS))
 VP_DM_C_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(VP_DM_C_SRCS))
@@ -347,8 +355,6 @@ endif
 ifneq ($(FIRMWARE),uefi)
 CFLAGS += -DCONFIG_LAST_LEVEL_EPT_AT_BOOT
 endif
-PRE_BUILD_SRCS += pre_build/static_checks.c
-PRE_BUILD_OBJS := $(patsubst %.c,$(HV_OBJDIR)/%.o,$(PRE_BUILD_SRCS))
 
 MODULES += $(LIB_MOD)
 MODULES += $(BOOT_MOD)
@@ -371,39 +377,7 @@ MODULES += $(SYS_INIT_MOD)
 DISTCLEAN_OBJS := $(shell find $(BASEDIR) -name '*.o')
 VERSION := $(HV_OBJDIR)/include/version.h
 
-# Create platform_acpi_info.h
-TEMPLATE_ACPI_INFO_HEADER := arch/x86/configs/platform_acpi_info.h
-BOARDTEMPLATE_ACPI_INFO_HEADER := arch/x86/configs/$(BOARD)/platform_acpi_info.h
-SOURCE_ACPI_INFO_HEADER := $(BOARD_CFG_DIR)/$(BOARD)_acpi_info.h
-TARGET_ACPI_INFO_HEADER := $(HV_OBJDIR)/include/platform_acpi_info.h
-
-$(TARGET_ACPI_INFO_HEADER): $(HV_OBJDIR)/$(HV_CONFIG)
-ifeq ($(CONFIG_ENFORCE_VALIDATED_ACPI_INFO),y)
-	@if [ ! -f $(SOURCE_ACPI_INFO_HEADER) ]; then	\
-	 echo "******* No ACPI info found *******" && \
-	 echo "Expected ACPI info header at $(SOURCE_ACPI_INFO_HEADER)" && \
-	 echo "" && \
-	 echo "The ACPI info header for this board is not available. Please use" && \
-	 echo "acrn-config tool for the target board to generate a validated one." && \
-	 echo "If you want to build the hypervisor with the template ACPI info," && \
-	 echo "unset ENFORCE_VALIDATED_ACPI_INFO using 'make menuconfig'." && \
-	 false;	\
-	else	\
-	 echo "Found validated ACPI info file : $(SOURCE_ACPI_INFO_HEADER)";	\
-	 cp $(SOURCE_ACPI_INFO_HEADER) $(TARGET_ACPI_INFO_HEADER);	\
-	fi
-else
-	@if [ -f $(SOURCE_ACPI_INFO_HEADER) ]; then   \
-	 echo "Found validated ACPI info file : $(SOURCE_ACPI_INFO_HEADER)";	\
-	 cp $(SOURCE_ACPI_INFO_HEADER) $(TARGET_ACPI_INFO_HEADER);	\
-	elif [ -f $(BOARDTEMPLATE_ACPI_INFO_HEADER) ]; then \
-	 echo "No ACPI info found, using the template at $(BOARDTEMPLATE_ACPI_INFO_HEADER) instead"; \
-	 cp $(BOARDTEMPLATE_ACPI_INFO_HEADER) $(TARGET_ACPI_INFO_HEADER);	\
-	else	\
-	 echo "No ACPI info found, using the template at $(TEMPLATE_ACPI_INFO_HEADER) instead"; \
-	 cp $(TEMPLATE_ACPI_INFO_HEADER) $(TARGET_ACPI_INFO_HEADER);	\
-	fi
-endif
+PRE_BUILD_DIR := ../misc/hv_prebuild
 
 .PHONY: all
 all: pre_build $(HV_OBJDIR)/$(HV_FILE).32.out $(HV_OBJDIR)/$(HV_FILE).bin
@@ -417,10 +391,13 @@ install-debug: $(HV_OBJDIR)/$(HV_FILE).map $(HV_OBJDIR)/$(HV_FILE).out
 	install -D $(HV_OBJDIR)/$(HV_FILE).map $(DESTDIR)$(libdir)/acrn/$(HV_FILE).$(BOARD).$(FIRMWARE).$(SCENARIO).map
 
 .PHONY: pre_build
-pre_build: $(PRE_BUILD_OBJS)
+pre_build: $(HV_OBJDIR)/$(HV_CONFIG_H)
+	@echo "Start pre-build static check ..."
+	$(MAKE) -C $(PRE_BUILD_DIR) BOARD=$(BOARD) SCENARIO=$(SCENARIO) TARGET_DIR=$(TARGET_DIR)
+	@$(HV_OBJDIR)/hv_prebuild_check.out
 
 .PHONY: header
-header: $(VERSION) $(HV_OBJDIR)/$(HV_CONFIG_H) $(TARGET_ACPI_INFO_HEADER)
+header: $(VERSION) $(HV_OBJDIR)/$(HV_CONFIG_H)
 
 .PHONY: lib-mod boot-mod hw-mod vp-base-mod vp-dm-mod vp-trusty-mod vp-hcall-mod sys-init-mod
 $(LIB_MOD): $(LIB_C_OBJS) $(LIB_S_OBJS)
@@ -433,8 +410,8 @@ $(BOOT_MOD): $(BOOT_S_OBJS) $(BOOT_C_OBJS)
 
 boot-mod: $(BOOT_MOD)
 
-$(HW_MOD): $(HW_S_OBJS) $(HW_C_OBJS)
-	$(AR) $(ARFLAGS) $(HW_MOD) $(HW_S_OBJS) $(HW_C_OBJS)
+$(HW_MOD): $(HW_S_OBJS) $(HW_C_OBJS) $(VM_CFG_C_OBJS)
+	$(AR) $(ARFLAGS) $(HW_MOD) $(HW_S_OBJS) $(HW_C_OBJS) $(VM_CFG_C_OBJS)
 
 hw-mod: $(HW_MOD)
 
@@ -496,19 +473,6 @@ distclean:
 
 PHONY: (VERSION)
 $(VERSION): $(HV_OBJDIR)/$(HV_CONFIG_H)
-	@if  [ "$(SCENARIO)" = "" ]; then echo "Please specify SCENARIO for the build!"; exit 1; fi;
-	@if  [ "$(BOARD)" = "" ]; then echo "Please specify BOARD for the build!"; exit 1; fi;
-	@echo "SCENARIO <$(SCENARIO)> for BOARD <$(BOARD)> is specified."
-	@if [ ! -d $(BOARD_CFG_DIR) ]; then \
-		echo "Configurations for BOARD $(BOARD) is not found."; exit 1; \
-	else \
-		echo "Found BOARD configurations under $(BOARD_CFG_DIR)"; \
-	fi;
-	@if [ ! -d $(SCENARIO_CFG_DIR) ]; then \
-		echo "Configurations for SCENARIO $(SCENARIO) is not found."; exit 1; \
-	else \
-		echo "Found SCENARIO configurations under $(SCENARIO_CFG_DIR)"; \
-	fi;
 	touch $(VERSION)
 	@COMMIT=`git rev-parse --verify --short HEAD 2>/dev/null`;\
 	DIRTY=`git diff-index --name-only HEAD`;\
@@ -543,7 +507,7 @@ $(VERSION): $(HV_OBJDIR)/$(HV_CONFIG_H)
 -include $(C_OBJS:.o=.d)
 -include $(S_OBJS:.o=.d)
 
-$(HV_OBJDIR)/%.o: %.c $(VERSION) $(HV_OBJDIR)/$(HV_CONFIG_H) $(TARGET_ACPI_INFO_HEADER)
+$(HV_OBJDIR)/%.o: %.c $(VERSION) $(HV_OBJDIR)/$(HV_CONFIG_H)
 	[ ! -e $@ ] && mkdir -p $(dir $@) && mkdir -p $(HV_MODDIR); \
 	$(CC) $(patsubst %, -I%, $(INCLUDE_PATH)) -I. -c $(CFLAGS) $(ARCH_CFLAGS) $< -o $@ -MMD -MT $@
 

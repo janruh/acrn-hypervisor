@@ -18,7 +18,9 @@ INCLUDE_HEADER = """
 #include <board.h>
 #include <vtd.h>
 #include <msr.h>
-#include <pci.h>"""
+#include <pci.h>
+#include <misc_cfg.h>
+"""
 
 MSR_IA32_L2_MASK_BASE = 0x00000D10
 MSR_IA32_L2_MASK_END = 0x00000D4F
@@ -101,7 +103,7 @@ def populate_clos_mask_msr(rdt_res, cat_mask_list, config):
     idx = 0
     for cat_mask in cat_mask_list:
         print("\t{", file=config)
-        print("\t\t.clos_mask = {0}U,".format(cat_mask), file=config)
+        print("\t\t.clos_mask = CLOS_MASK_{},".format(idx), file=config)
         print("\t\t.msr_index = MSR_IA32_{0}_MASK_BASE + {1},".format(
               rdt_res, idx), file=config)
         print("\t},", file=config)
@@ -117,7 +119,7 @@ def populate_mba_delay_mask(rdt_res, mba_delay_list, config):
     idx = 0
     for mba_delay_mask in mba_delay_list:
         print("\t{", file=config)
-        print("\t\t.mba_delay = {0}U,".format(mba_delay_mask), file=config)
+        print("\t\t.mba_delay = MBA_MASK_{},".format(idx), file=config)
         print("\t\t.msr_index = MSR_IA32_{0}_MASK_BASE + {1},".format(
               rdt_res, idx), file=config)
         print("\t},", file=config)
@@ -137,6 +139,8 @@ def gen_rdt_res(config):
 
     cat_mask_list = common.get_hv_item_tag(common.SCENARIO_INFO_FILE, "FEATURES", "RDT", "CLOS_MASK")
     mba_delay_list = common.get_hv_item_tag(common.SCENARIO_INFO_FILE, "FEATURES", "RDT", "MBA_DELAY")
+    # TODO: Since use the MAX_PLATFORM_CLOS_NUM for L2/L3/MBA, so use the minimal number of them
+    common_clos_max = min(len(cat_mask_list), len(mba_delay_list))
 
     if common_clos_max > MSR_IA32_L2_MASK_END - MSR_IA32_L2_MASK_BASE or\
         common_clos_max > MSR_IA32_L3_MASK_END - MSR_IA32_L3_MASK_BASE:
@@ -153,21 +157,21 @@ def gen_rdt_res(config):
             if rdt_res == "L2":
                 rdt_res_str = "l2"
                 print("struct platform_clos_info platform_{0}_clos_array[{1}] = {{".format(rdt_res_str,
-                      "MAX_CACHE_CLOS_NUM_ENTRIES"), file=config)
+                      "MAX_PLATFORM_CLOS_NUM"), file=config)
                 populate_clos_mask_msr(rdt_res, cat_mask_list, config)
                 print("};\n", file=config)
                 res_present[RDT.L2.value] = 1
             elif rdt_res == "L3":
                 rdt_res_str = "l3"
                 print("struct platform_clos_info platform_{0}_clos_array[{1}] = {{".format(rdt_res_str,
-                      "MAX_CACHE_CLOS_NUM_ENTRIES"), file=config)
+                      "MAX_PLATFORM_CLOS_NUM"), file=config)
                 populate_clos_mask_msr(rdt_res, cat_mask_list, config)
                 print("};\n", file=config)
                 res_present[RDT.L3.value] = 1
             elif rdt_res == "MBA":
                 rdt_res_str = "mba"
                 print("struct platform_clos_info platform_{0}_clos_array[{1}] = {{".format(rdt_res_str,
-                      "MAX_MBA_CLOS_NUM_ENTRIES"), file=config)
+                      "MAX_PLATFORM_CLOS_NUM"), file=config)
                 err_dic = populate_mba_delay_mask(rdt_res, mba_delay_list, config)
                 print("};\n", file=config)
                 res_present[RDT.MBA.value] = 1
@@ -261,19 +265,8 @@ def gen_pci_hide(config):
 
 def gen_known_caps_pci_devs(config):
     """Generate information for known capabilities of pci devices"""
-
-    vpid_lines = board_cfg_lib.get_info(common.BOARD_INFO_FILE, "<PCI_VID_PID>", "</PCI_VID_PID>")
-    for dev,known_dev in board_cfg_lib.KNOWN_CAPS_PCI_DEVS_DB.items():
-        if dev not in board_cfg_lib.KNOWN_CAPS_PCI_DEVS:
-            board_cfg_lib.KNOWN_CAPS_PCI_DEVS[dev] = []
-        for k_dev in known_dev:
-            for vpid_line in vpid_lines:
-                if k_dev in vpid_line:
-                    bdf = vpid_line.split()[0]
-                    board_cfg_lib.KNOWN_CAPS_PCI_DEVS[dev].append(bdf)
-                    break
-
-    for dev,bdf_list in board_cfg_lib.KNOWN_CAPS_PCI_DEVS.items():
+    known_caps_pci_devs = board_cfg_lib.get_known_caps_pci_devs()
+    for dev,bdf_list in known_caps_pci_devs.items():
         if dev == "TSN":
             print("", file=config)
             bdf_list_len = len(bdf_list)
