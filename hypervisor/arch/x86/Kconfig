@@ -216,6 +216,16 @@ config SOS_RAM_SIZE
 	  A 64-bit integer indicating the size of the Service OS RAM (MMIO not
 	  included).
 
+config SYNCHRONIZED_TIME_ENABLED
+    bool "Enable clock synchronization of hypervisor utilizing dedicated RTVM"
+	default n
+	help
+      Clock synchronization of the hypervisor and hosted VMs is achieved via a
+      shared hypervisor memory region. A single dedicated RTVM has read-write
+      access to said shared memory running an extended NTP subsystem that updates
+      parameters derived from the clock synchronization application (e.g. LinuxPTP)
+      that is running in user space.
+
  config UOS_RAM_SIZE
 	hex "Size of the User OS (UOS) RAM"
 	range 0 0x2000000000
