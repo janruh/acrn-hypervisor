@@ -287,9 +287,6 @@ VP_BASE_C_SRCS += arch/x86/guest/vmexit.c
 VP_BASE_C_SRCS += arch/x86/guest/ept.c
 VP_BASE_C_SRCS += arch/x86/guest/ve820.c
 VP_BASE_C_SRCS += arch/x86/guest/ucode.c
-ifeq ($(CONFIG_SYNCHRONIZED_TIME_ENABLED),y)
-VP_BASE_C_SRCS += arch/x86/guest/time.c
-endif
 ifeq ($(CONFIG_HYPERV_ENABLED),y)
 VP_BASE_C_SRCS += arch/x86/guest/hyperv.c
 endif
@@ -310,6 +307,9 @@ VP_DM_C_SRCS += dm/vpci/vpci.c
 VP_DM_C_SRCS += dm/vpci/vhostbridge.c
 VP_DM_C_SRCS += dm/vpci/vpci_bridge.c
 VP_DM_C_SRCS += dm/vpci/ivshmem.c
+ifeq ($(CONFIG_SYNCHRONIZED_TIME_ENABLED),y)
+VP_BASE_C_SRCS += dm/vpci/stshmem.c
+endif
 VP_DM_C_SRCS += dm/vpci/pci_pt.c
 VP_DM_C_SRCS += dm/vpci/vmsi.c
 VP_DM_C_SRCS += dm/vpci/vmsix.c
